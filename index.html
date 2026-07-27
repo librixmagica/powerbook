@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PowerBook</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="Visualiza un contenido PowerBook">
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="PowerBook">
+    
+    <!-- Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
+    <!-- Ruffle Player -->
+    <script src="ruffle/ruffle.js"></script>
+    <script>
+        window.RufflePlayer = window.RufflePlayer || {};
+        window.RufflePlayer.config = {
+            "autoplay": "on",
+            "splashScreen": false,
+            "unmuteOverlay": "hidden",
+            "letterbox": "on",
+            "contextMenu": false
+        };
+    </script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: black;
+            color: white;
+            font-family: Arial, sans-serif;
+            padding: 0;
+            overflow: hidden; /* el scroll lo maneja .grid-container */
+        }
+        
+        .grid-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            margin: 0;
+            width: 100vw;
+            height: 100dvh;
+            overflow-y: scroll;
+            scroll-snap-type: y mandatory;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        .magic-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            background: transparent;
+            width: 100vw;
+            height: 100dvh;
+            flex-shrink: 0;
+            scroll-snap-align: start;
+        }
+        
+        .magic-item:hover {
+            background-color: #121212;
+        }
+        
+        .magic-icon {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .fullscreen-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100dvh; /* dvh = dynamic viewport height, descuenta barra del navegador en mobile */
+            background: black;
+            z-index: 9999;
+            display: none;
+        }
+        
+        .fullscreen-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        
+        .fullscreen-swf {
+            width: 100%;
+            height: 100%;
+            display: none;
+            touch-action: none;
+        }
+        
+        /* Prevenir menú contextual en todos los elementos */
+        * {
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        .close-fullscreen {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            border: none;
+            padding: 10px;
+            cursor: pointer;
+            z-index: 10000;
+            font-size: 16px;
+        }
+        /* Toast de error (#4) */
+        #toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #1a1a1a;
+            color: #ff6b6b;
+            border: 1px solid #333;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s, transform 0.25s;
+            z-index: 99999;
+            white-space: nowrap;
+            max-width: 90vw;
+            text-overflow: ellipsis;
+            overflow: hidden;
+        }
+        #toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <div id="toast"></div>
+
+    <div class="grid-container" id="magicGrid">
+        <!-- Los items .magic aparecerán aquí -->
+    </div>
+    
+    <div class="fullscreen-container" id="fullscreenContainer">
+        <button class="close-fullscreen" onclick="closeFullscreen()">✕</button>
+        <iframe class="fullscreen-iframe" id="fullscreenIframe"></iframe>
+        <div class="fullscreen-swf" id="fullscreenSwf"></div>
+    </div>
+
+    <script>
+        // #3: blob URL tracking
+        let activeBlobUrls = []; // cada entrada: { url, type: 'icon' | 'content' }
+
+        // #4: toast en lugar de alert()
+        let toastTimer = null;
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        // Cargar el ítem único (cover.png) al iniciar
+        window.addEventListener('load', function() {
+            loadCover();
+        });
+
+        async function loadCover() {
+            try {
+                const timestamp = Date.now();
+                const response = await fetch(`cover.png?t=${timestamp}`);
+
+                if (!response.ok) {
+                    console.log('No se pudo cargar cover.png');
+                    showToast('No se encontró cover.png'); // #4
+                    return;
+                }
+
+                const iconBlob = await response.blob();
+                const iconUrl = URL.createObjectURL(iconBlob);
+                activeBlobUrls.push({ url: iconUrl, type: 'icon' }); // #3
+
+                const grid = document.getElementById('magicGrid');
+                grid.innerHTML = '';
+
+                const item = document.createElement('div');
+                item.className = 'magic-item';
+                item.onclick = () => openContent();
+                item.innerHTML = `<img class="magic-icon" src="${iconUrl}" alt="PowerBook" />`;
+
+                grid.appendChild(item);
+
+            } catch (error) {
+                console.error('Error cargando cover.png:', error);
+                showToast('Error al cargar la portada'); // #4
+            }
+        }
+
+        async function openContent() {
+            try {
+                const timestamp = Date.now();
+
+                // Intentar primero contenido.swf, luego contenido.html
+                const swfResponse = await fetch(`contenido.swf?t=${timestamp}`);
+
+                if (swfResponse.ok) {
+                    const swfBlob = await swfResponse.blob();
+                    const swfUrl = URL.createObjectURL(swfBlob);
+                    activeBlobUrls.push({ url: swfUrl, type: 'content' }); // #3
+
+                    const swfContainer = document.getElementById('fullscreenSwf');
+                    const iframe = document.getElementById('fullscreenIframe');
+
+                    iframe.style.display = 'none';
+                    swfContainer.style.display = 'block';
+                    swfContainer.innerHTML = '';
+
+                    const player = window.RufflePlayer.newest().createPlayer();
+                    player.style.width = '100%';
+                    player.style.height = '100%';
+                    swfContainer.appendChild(player);
+
+                    player.addEventListener('contextmenu', (e) => e.preventDefault());
+                    swfContainer.addEventListener('contextmenu', (e) => e.preventDefault());
+
+                    await player.load(swfUrl);
+
+                    document.getElementById('fullscreenContainer').style.display = 'block';
+                    history.pushState({ fullscreen: true }, '');
+                    return;
+                }
+
+                const htmlResponse = await fetch(`contenido.html?t=${timestamp}`);
+
+                if (htmlResponse.ok) {
+                    const htmlContent = await htmlResponse.text();
+                    const blob = new Blob([htmlContent], { type: 'text/html' });
+                    const url = URL.createObjectURL(blob);
+                    activeBlobUrls.push({ url, type: 'content' }); // #3
+
+                    const iframe = document.getElementById('fullscreenIframe');
+                    const swfContainer = document.getElementById('fullscreenSwf');
+
+                    swfContainer.style.display = 'none';
+                    iframe.style.display = 'block';
+                    iframe.src = url;
+
+                    document.getElementById('fullscreenContainer').style.display = 'block';
+                    history.pushState({ fullscreen: true }, '');
+                    return;
+                }
+
+                console.error('No se encontró contenido.swf ni contenido.html');
+                showToast('No se encontró contenido para abrir'); // #4
+
+            } catch (error) {
+                console.error('Error abriendo contenido:', error);
+                showToast('Error al abrir el archivo'); // #4
+            }
+        }
+        
+        function closeFullscreen() {
+            document.getElementById('fullscreenContainer').style.display = 'none';
+            
+            if (document.fullscreenElement) {
+                document.exitFullscreen().catch(err => {
+                    console.log('Error saliendo de fullscreen:', err);
+                });
+            }
+            
+            document.getElementById('fullscreenIframe').src = '';
+            document.getElementById('fullscreenSwf').innerHTML = '';
+
+            // #3: liberar blob de contenido abierto
+            activeBlobUrls = activeBlobUrls.filter(entry => {
+                if (entry.type === 'content') {
+                    URL.revokeObjectURL(entry.url);
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        // Cerrar con botón Atrás
+        window.addEventListener('popstate', function(e) {
+            const container = document.getElementById('fullscreenContainer');
+            if (container.style.display === 'block') {
+                closeFullscreen();
+            }
+        });
+        
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeFullscreen();
+            }
+        });
+        
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('sw.js')
+                    .then(() => console.log('SW registrado'))
+                    .catch((error) => console.log('SW error:', error));
+            });
+        }
+    </script>
+</body>
+</html>
